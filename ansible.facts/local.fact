@@ -1,0 +1,67 @@
+#!/bin/bash
+
+IP_INDEX=`/opt/dell/srvadmin/sbin/omreport chassis remoteaccess config=nic | grep "IP Address        :" | cut -f 11 -d " "`
+if [ -a "/usr/sbin/MegaCli" ]
+then
+    DISK_NUMBER=`/usr/sbin/MegaCli -EncInfo -aALL | grep "Number of Physical Drives     :" | awk '{print $6}'`
+else
+    DISK_NUMBER=""
+fi
+
+if [ -a "/usr/sbin/raidstatus" ]
+then
+    SPARE_NUMBER=`/usr/sbin/raidstatus | grep Hotspare | wc -l`
+else
+    SPARE_NUMBER=""
+fi
+
+
+if [ -a "/opt/MegaRAID/storcli/storcli64" ]
+then
+    RAID_CARD_MODEL=`/opt/MegaRAID/storcli/storcli64 /c0 show | grep "Product Name =" | awk '{for (i = 4; i <= NF; i++) printf $i " "; print ""}' | sed 's/ *$//'`
+    RAID_CARD_DRIVER=`/opt/MegaRAID/storcli/storcli64 /c0 show all | grep 'Driver Version = ' |awk '{for (i = 4; i <= NF; i++) printf $i " "; print ""}' | sed 's/ *$//'`
+    RAID_CARD_FW=`/opt/MegaRAID/storcli/storcli64 /c0 show all | grep 'Firmware Package Build = ' |awk '{for (i = 5; i <= NF; i++) printf $i " "; print ""}' | sed 's/ *$//'`
+
+else
+    RAID_CARD_MODEL=""
+    RAID_CARD_DRIVER=""
+    RAID_CARD_FW=""
+fi
+
+
+if [ -a "/usr/sbin/dmidecode" ]
+then
+    MEMORY_SLOT_NUMBER=`/usr/sbin/dmidecode -t 17 | grep 'Memory Device'| wc -l`
+    MEMORY_TYPE=`/usr/sbin/dmidecode -t 17 | grep '^\s*.Type:'| awk '{print $2}'|awk '!x[$0]++' | head -n1`
+    MEMORY_CLOCK_SPEED=`/usr/sbin/dmidecode -t 17 | grep 'Configured Clock Speed:'| awk '{print $4}'|awk '!x[$0]++' | head -n1`
+else
+    MEMORY_SLOT_NUMBER=""
+    MEMORY_TYPE=""
+    MEMORY_CLOCK_SPEED=""
+fi
+
+if [ -a "/opt/dell/srvadmin/sbin/omreport" ]
+then
+    REMOTE_CARD_MODEL=`/opt/dell/srvadmin/sbin/omreport chassis remoteaccess | grep 'Device Type                        : ' |awk '{for (i = 4; i <= NF; i++) printf $i " "; print ""}'| sed 's/ *$//'`
+    REMOTE_CARD_FW=`/opt/dell/srvadmin/sbin/omreport chassis firmware |sed -n 4p | awk -F: '{ print $2 }'`
+else
+    REMOTE_CARD_MODEL=""
+    REMOTE_CARD_FW=""
+fi
+
+
+cat <<EOF
+{
+    "drac_ip" : "$IP_INDEX",
+    "disk_number" : "$DISK_NUMBER",
+    "spare_number" : "$SPARE_NUMBER",
+    "memory_slot_number" : "$MEMORY_SLOT_NUMBER",
+    "memory_type" : "$MEMORY_TYPE",
+    "memory_clock_speed" : "$MEMORY_CLOCK_SPEED",
+    "raid_card_model" : "$RAID_CARD_MODEL",
+    "raid_card_driver" : "$RAID_CARD_DRIVER",
+    "raid_card_firmware" : "$RAID_CARD_FW",
+    "remote_card_model" : "$REMOTE_CARD_MODEL",
+    "remote_card_firmware" : "$REMOTE_CARD_FW"
+}
+EOF
