@@ -1,0 +1,92 @@
+#!/usr/bin/python
+
+import os.path
+import sys
+import subprocess
+import ipaddr
+import MySQLdb
+import rtapi
+import json
+import math
+import argparse
+import logging
+
+parser = argparse.ArgumentParser(
+    description= 'Add Server into Rack')
+
+parser.add_argument('hostname')
+parser.add_argument("-v", "--verbose",help="increase output verbosity", action="store_true")
+parser.add_argument("-l",'--location', help="get the Datacenter name",required=True)
+parser.add_argument("-w",'--row', help="get the Row name",required=True)
+parser.add_argument("-r",'--rack', help="get the Rack name",required=True)
+parser.add_argument("-u",'--unit', help="get the Unit Number of the rack",required=True)
+args = parser.parse_args()
+
+if args.verbose:
+    logging.basicConfig(level=logging.DEBUG)
+
+# Create connection to database
+try:
+    # Create connection to database
+    db = MySQLdb.connect(host='10.1.37.7',port=3306, passwd='1t@N7w7gg',db='racktables',user='root')
+except MySQLdb.Error ,e:
+    print "Error %d: %s" % (e.args[0],e.args[1])
+    sys.exit(1)
+
+# Initialize rtapi with database connection
+rtobject = rtapi.RTObject(db)
+
+# List all objects from database
+#print rtobject.ListObjects()
+
+hostname = args.hostname
+
+object_id = rtobject.GetObjectId(hostname)
+
+if object_id == None:
+    print "ERROR: No Server has been found, exit"
+    sys.exit(1)
+
+server_type_id  = rtobject.GetObjTypeid(object_id)
+
+if server_type_id != 4:
+    print "ERROR: Not a Physical Server"
+    sys.exit(1)
+
+
+args_var=vars(args)
+
+location= args_var['location']
+row= args_var['row']
+rack= args_var['rack']
+unit= args_var['unit']
+
+
+rack_id=rtobject.GetRackId(location,row,rack)
+
+if rack_id == None:
+    print "ERROR: Rack not found"
+    sys.exit(1)
+
+try:
+    int(unit)
+except ValueError:
+    print "ERROR: Unit has to be number"
+    sys.exit(1)
+
+unit = int(unit)
+
+if unit < 1 or unit >42:
+    print "ERROR: Unit has to be between 1~42"
+    sys.exit(1)
+
+
+place_taken_id =rtobject.GetObjIdRack(rack_id,unit)
+
+if place_taken_id != None:
+   place_taken_hostname = rtobject.GetObjectName(place_taken_id)
+   print ("Error this place has been taken by " + place_taken_hostname +", please login Racktables to check and make sure the place is assignable. " )
+else:
+   rtobject.AddRackSpace(rack_id,unit,object_id)
+   print (hostname+"has been insert into rackspace in Location: "+location+", Row: "+row+", Rack: "+rack+", Unit: "+str(unit))
+db.close()

@@ -1,0 +1,497 @@
+#!/usr/bin/python
+
+import os.path
+import sys
+import subprocess
+import ipaddr
+import MySQLdb
+import rtapi
+import json
+import math
+import argparse
+import logging
+
+parser = argparse.ArgumentParser(
+    description= 'Server audit automation system for RackTables')
+
+parser.add_argument('filename')
+parser.add_argument("-f", dest="force_init", default=False, action="store_true", help="Force initialization, automaticly rewrite hostname")
+parser.add_argument("-c",'--contact', help="Add contact person into Racktables")
+parser.add_argument("-v", "--verbose", help="increase output verbosity", action="store_true")
+
+args = parser.parse_args()
+
+if args.verbose:
+    logging.basicConfig(level=logging.DEBUG)
+
+# Create connection to database
+try:
+    # Create connection to database
+    db = MySQLdb.connect(host='10.1.37.7',port=3306, passwd='1t@N7w7gg',db='racktables',user='root')
+except MySQLdb.Error ,e:
+    print "Error %d: %s" % (e.args[0],e.args[1])
+    sys.exit(1)
+
+# Initialize rtapi with database connection
+rtobject = rtapi.RTObject(db)
+
+# List all objects from database
+#print rtobject.ListObjects()
+
+
+
+if os.path.exists(args.filename):
+    with open(args.filename) as data_file:    
+        data = json.load(data_file)
+    facts = data.get('ansible_facts')
+else:
+    print "Error file no exist"
+    sys.exit(1)
+
+ansible_architecture = facts.get('ansible_architecture')
+
+ansible_all_ipv4_addresses = facts.get('ansible_all_ipv4_addresses')
+
+ansible_hostname = facts.get('ansible_hostname')
+
+ansible_os_family = facts.get('ansible_os_family')
+
+ansible_system_vendor = facts.get('ansible_system_vendor')
+
+ansible_virtualization_type = facts.get('ansible_virtualization_type')
+
+ansible_memtotal_mb = facts.get('ansible_memtotal_mb')
+
+ansible_processor_vcpus = facts.get('ansible_processor_vcpus')
+
+os = facts.get('ansible_distribution')+"%GSKIP%"+facts.get('ansible_distribution')+" V"+facts.get('ansible_distribution_major_version')
+
+ansible_dns = facts.get('ansible_dns')
+
+ansible_fqdn = facts.get('ansible_fqdn')
+
+ansible_processor = facts.get('ansible_processor')[-1]
+
+cpu_core_number = facts.get('ansible_processor_cores')*facts.get('ansible_processor_count')
+
+nameservers = ';'.join(ansible_dns.get('nameservers'))
+
+ansible_domain = facts.get('ansible_domain')
+
+ansible_bios_version = facts.get('ansible_bios_version')
+
+ansible_interfaces = facts.get('ansible_interfaces')
+
+memory_size = str(math.ceil(float(ansible_memtotal_mb)/1024))
+
+if ansible_virtualization_type == "NA" or facts.get('ansible_virtualization_role') == 'host':
+    server_type_id = 4
+    server_type = "physical"
+    ansible_processor = facts.get('ansible_processor')[-1]
+    ansible_product_name  = facts.get('ansible_product_name')
+else:
+    server_type_id = 1504
+    server_type = "vm"
+    ansible_processor = "vCPU"
+
+ansible_product_name = facts.get('ansible_product_name')
+ansible_product_serial = facts.get('ansible_product_serial')
+ansible_machine_id = facts.get('ansible_machine_id')
+
+if ansible_system_vendor == "Dell Inc." and ansible_product_name.split()[0] == "PowerEdge":
+   model = ansible_product_name.split()[1]
+   if model[0] == "C":
+       ansible_product_serial=facts.get('ansible_product_serial')+'.'+facts.get('ansible_machine_id')
+
+if server_type_id == 4:
+   asset_no = ansible_product_serial
+elif server_type_id == 1504:
+   asset_no = "VM."+ansible_hostname
+
+
+ansible_devices = facts.get('ansible_devices')
+HDisk = ""
+for key, value  in ansible_devices.items():
+    disk_size = value.get('size')
+    HDisk+=key+": "+disk_size+"; "
+
+#print("CPU Type: "+ansible_processor+" * "+str(cpu_core_number))
+
+
+
+#Main Racktables Input:
+
+if server_type_id == 4:
+    product_name = ansible_product_name
+    logging.debug("Product name: "+product_name)
+    service_tag = ansible_product_serial
+    
+    vendor = ansible_system_vendor.partition(' ')[0]
+
+elif server_type_id == 1504:
+
+    service_tag = "VM."+ansible_hostname
+
+# Get hostname
+hostname = ansible_hostname.upper()
+
+# CPU information
+cpu_logical_num = cpu_core_number
+
+
+cpu_model_name = ansible_processor+" * "+str(cpu_core_number)
+
+memory_mb = ansible_memtotal_mb
+memory_gb = memory_size+"GB"
+
+label = ansible_hostname
+
+kernel_version = facts.get('ansible_kernel')
+
+if not rtobject.ObjectExistST(service_tag):
+    #
+    # service tag not exist
+    #
+    # hostname not exist = insert new server Object
+    if not rtobject.ObjectExistName(hostname):
+        rtobject.AddObject(hostname,server_type_id,service_tag,label)
+        object_id = rtobject.GetObjectId(hostname)
+        #print(object_id)
+        searchstring = os
+        os_id = rtobject.GetDictionaryId(os)
+        attr_id = rtobject.GetAttributeId("SW type")
+        if os_id != None:
+            rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",os_id,hostname)
+        else:
+            print("OS id not found in racktables: "+ os)
+
+        if server_type_id == 4:
+        #get id of HW
+            if vendor == "Dell" and ansible_product_name.split()[0] == "PowerEdge":
+                model = ansible_product_name.split()[1] 
+
+                if model in ["1955", "M520", "M600", "M610", "M620","M710HD"]:
+                    hw_key = "Dell PowerEdge (blade)%GPASS%"+model
+                elif model in ["M610x", "M710", "M805", "M820", "M905","M910", "M915"]:
+                    hw_key = "Dell PowerEdge (blade)%GPASS%"+model+"%L2,1%"
+                elif model[0] == "C":
+                    hw_key = "Dell PowerEdge C%GPASS%"+model
+                else:
+                    hw_key = "Dell PowerEdge%GPASS%"+ansible_product_name.split(' ', 1)[1]
+            
+            if facts.get('ansible_local') != None:
+                local_facts = facts.get('ansible_local').get('local')
+                disk_number = local_facts.get('disk_number')
+                if disk_number != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK Slot number"),disk_number,"NULL",hostname) 
+
+
+                spare_number = local_facts.get('spare_number')
+                if spare_number != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK Spare"),spare_number,"NULL",hostname) 
+
+                drac_ip = local_facts.get('drac_ip')
+                if drac_ip != None:
+                    rtobject.InterfaceAddIpv4IP(object_id,'DRAC',drac_ip)
+            
+                memory_slot_number = local_facts.get('memory_slot_number')
+                if memory_slot_number != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("MEMORY Slots"),memory_slot_number,"NULL",hostname)
+
+                memory_type = local_facts.get('memory_type')
+                if memory_type != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("MEMORY Type"),memory_type,"NULL",hostname)
+
+                memory_clock_speed = local_facts.get('memory_clock_speed')
+                if memory_clock_speed != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("MEMORY Speed"),memory_clock_speed,"NULL",hostname)
+
+                raid_card_driver = local_facts.get('raid_card_driver')
+                if memory_clock_speed != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("RAID Controller Driver"),raid_card_driver,"NULL",hostname)
+
+                raid_card_firmware = local_facts.get('raid_card_firmware')
+                if memory_clock_speed != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("RAID Controller FW"),raid_card_firmware,"NULL",hostname)
+
+                raid_card_model = local_facts.get("raid_card_model")
+                if raid_card_model != None:
+                    raid_card_id = rtobject.GetDictionaryId(raid_card_model)
+                    attr_id = rtobject.GetAttributeId("RAID Controller Models")
+                    if raid_card_id != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",raid_card_id,hostname)
+
+                remote_card_firmware = local_facts.get('remote_card_firmware')
+                if remote_card_firmware != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("REMOTE Card FW"),remote_card_firmware,"NULL",hostname)
+
+
+                remote_card_model = local_facts.get("remote_card_model")
+                if remote_card_model != None:
+                    remote_card_id = rtobject.GetDictionaryId(remote_card_model)
+                    attr_id = rtobject.GetAttributeId("REMOTE Card Models")
+                    if remote_card_id != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",remote_card_id,hostname)
+
+
+            hw_id = rtobject.GetDictionaryId(hw_key)
+            attr_id = rtobject.GetAttributeId("HW type")
+            if hw_id != None:
+                rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",hw_id,hostname)
+                #print("Inserting HW attribute: obj_id=%d srv_type_id=%d attr_id=%d hw_id=%d hostname=%s" % (object_id,server_type_id,attr_id,hw_id,hostname))
+            else:
+                print("HW id not found in racktables: "+hw_key)
+            if ansible_bios_version != "":
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("SERVER BIOS"),ansible_bios_version,"NULL",hostname)
+        if cpu_model_name != "":
+            rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("CPU Type"),cpu_model_name,"NULL",hostname)
+
+        if memory_gb != "":
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("Memory Size"),memory_gb,"NULL",hostname)
+
+        if nameservers != "":
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("DNS"),nameservers,"NULL",hostname)
+
+        if ansible_fqdn != "":
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("FQDN"),ansible_fqdn,"NULL",hostname)
+
+        if HDisk != "":
+            rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK"),HDisk,"NULL",hostname)
+
+        if ansible_architecture == 'x86_64':
+            arch = '64-bit (x64)'
+        else:
+            arch = '32-bit (x86)'
+        if arch != "":
+            arch_id = rtobject.GetDictionaryId(arch)
+            rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("SERVER OS Architecture"),"NULL",arch_id,hostname)
+        
+        status_id = rtobject.GetDictionaryId('Up:Deployed')
+        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("STATUS"),"NULL",status_id,hostname)
+
+
+
+        for interface in ansible_interfaces:
+            if interface != 'lo':
+                device = "ansible_"+interface
+                device_ipv4 = facts.get(device).get('ipv4')
+                if device_ipv4 != None:
+                    rtobject.InterfaceAddIpv4IP(object_id,interface,device_ipv4.get('address'))
+        
+        if args.contact:
+            args_var=vars(args)
+            contact_person= args_var['contact']
+            rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("Contact Person"),contact_person,"NULL",hostname)
+
+        tags_list = rtobject.GetObjectTags(object_id)
+        if hostname.startswith( 'E11' ):
+            tag_id=rtobject.GetLocationTagid('E11')
+            rtobject.AddLocationTag(object_id, tag_id)
+        elif hostname.startswith( 'E3' ):
+            tag_id=rtobject.GetLocationTagid('E3')
+            rtobject.AddLocationTag(object_id, tag_id)
+        elif hostname.startswith( 'E4' ):
+            tag_id=rtobject.GetLocationTagid('E4')
+            rtobject.AddLocationTag(object_id, tag_id)
+        elif hostname.startswith( 'E7' ):
+            tag_id=rtobject.GetLocationTagid('WH7')
+            rtobject.AddLocationTag(object_id, tag_id)
+        elif hostname.startswith( 'S7' ):
+            tag_id=rtobject.GetLocationTagid('WH7')
+            rtobject.AddLocationTag(object_id, tag_id)
+        elif hostname.startswith( 'S1' ):
+            tag_id=rtobject.GetLocationTagid('WH1')
+            rtobject.AddLocationTag(object_id, tag_id)
+        elif hostname.startswith( 'S8' ):
+            tag_id=rtobject.GetLocationTagid('WH8')
+            rtobject.AddLocationTag(object_id, tag_id)
+
+        rtobject.InsertLog(object_id, "Server-Audit insert instalation date")
+    else:
+        object_id = rtobject.GetObjectId(hostname)
+        current_service_tag = rtobject.GetServiceTag(object_id)
+        print(current_service_tag)
+        print "Hostname %s already exist, current service tag: %s. I'm using service tag: %s. Please double check!"  % (hostname,current_service_tag,service_tag) 
+    
+
+
+
+else:
+    #
+    # service tag exist
+    #
+    #check if hostname is the same
+    if (rtobject.ObjectExistName(hostname)) or (args.force_init) :
+        if args.force_init:
+            rtobject.UpdateObjectName(rtobject.GetObjectId(rtobject.GetObjectNameByAsset(service_tag)), hostname)
+            object_id = rtobject.GetObjectId(hostname)
+            #print(object_id)
+            searchstring = os
+            os_id = rtobject.GetDictionaryId(os)
+            attr_id = rtobject.GetAttributeId("SW type")
+            if os_id != None:
+                rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",os_id,hostname)
+            else:
+                print("OS id not found in racktables: "+ os)
+
+            if server_type_id == 4:
+            #get id of HW
+                if vendor == "Dell" and ansible_product_name.split()[0] == "PowerEdge":
+                    model = ansible_product_name.split()[1] 
+
+                    if model in ["1955", "M520", "M600", "M610", "M620","M710HD"]:
+                        hw_key = "Dell PowerEdge (blade)%GPASS%"+model
+                    elif model in ["M610x", "M710", "M805", "M820", "M905","M910", "M915"]:
+                        hw_key = "Dell PowerEdge (blade)%GPASS%"+model+"%L2,1%"
+                    elif model[0] == "C":
+                        hw_key = "Dell PowerEdge C%GPASS%"+model
+                    else:
+                        hw_key = "Dell PowerEdge%GPASS%"+ansible_product_name.split(' ', 1)[1]
+                
+                if facts.get('ansible_local') != None:
+                    local_facts = facts.get('ansible_local').get('local')
+                    disk_number = local_facts.get('disk_number')
+                    if disk_number != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK Slot number"),disk_number,"NULL",hostname) 
+
+
+                    spare_number = local_facts.get('spare_number')
+                    if spare_number != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK Spare"),spare_number,"NULL",hostname) 
+
+                    drac_ip = local_facts.get('drac_ip')
+                    if drac_ip != None:
+                        rtobject.InterfaceAddIpv4IP(object_id,'DRAC',drac_ip)
+                
+                    memory_slot_number = local_facts.get('memory_slot_number')
+                    if memory_slot_number != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("MEMORY Slots"),memory_slot_number,"NULL",hostname)
+
+                    memory_type = local_facts.get('memory_type')
+                    if memory_type != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("MEMORY Type"),memory_type,"NULL",hostname)
+
+                    memory_clock_speed = local_facts.get('memory_clock_speed')
+                    if memory_clock_speed != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("MEMORY Speed"),memory_clock_speed,"NULL",hostname)
+
+                    raid_card_driver = local_facts.get('raid_card_driver')
+                    if memory_clock_speed != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("RAID Controller Driver"),raid_card_driver,"NULL",hostname)
+
+                    raid_card_firmware = local_facts.get('raid_card_firmware')
+                    if memory_clock_speed != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("RAID Controller FW"),raid_card_firmware,"NULL",hostname)
+
+                    raid_card_model = local_facts.get("raid_card_model")
+                    if raid_card_model != None:
+                        raid_card_id = rtobject.GetDictionaryId(raid_card_model)
+                        attr_id = rtobject.GetAttributeId("RAID Controller Models")
+                        if raid_card_id != None:
+                            rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",raid_card_id,hostname)
+
+                    remote_card_firmware = local_facts.get('remote_card_firmware')
+                    if remote_card_firmware != None:
+                        rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("REMOTE Card FW"),remote_card_firmware,"NULL",hostname)
+
+
+                    remote_card_model = local_facts.get("remote_card_model")
+                    if remote_card_model != None:
+                        remote_card_id = rtobject.GetDictionaryId(remote_card_model)
+                        attr_id = rtobject.GetAttributeId("REMOTE Card Models")
+                        if remote_card_id != None:
+                            rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",remote_card_id,hostname)
+
+
+                hw_id = rtobject.GetDictionaryId(hw_key)
+                attr_id = rtobject.GetAttributeId("HW type")
+                if hw_id != None:
+                    rtobject.InsertAttribute(object_id,server_type_id,attr_id,"NULL",hw_id,hostname)
+                    #print("Inserting HW attribute: obj_id=%d srv_type_id=%d attr_id=%d hw_id=%d hostname=%s" % (object_id,server_type_id,attr_id,hw_id,hostname))
+                else:
+                    print("HW id not found in racktables: "+hw_key)
+                if ansible_bios_version != "":
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("SERVER BIOS"),ansible_bios_version,"NULL",hostname)
+            if cpu_model_name != "":
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("CPU Type"),cpu_model_name,"NULL",hostname)
+
+            if memory_gb != "":
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("Memory Size"),memory_gb,"NULL",hostname)
+
+            if nameservers != "":
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("DNS"),nameservers,"NULL",hostname)
+
+            if ansible_fqdn != "":
+                    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("FQDN"),ansible_fqdn,"NULL",hostname)
+
+            if HDisk != "":
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK"),HDisk,"NULL",hostname)
+
+            if ansible_architecture == 'x86_64':
+                arch = '64-bit (x64)'
+            else:
+                arch = '32-bit (x86)'
+            if arch != "":
+                arch_id = rtobject.GetDictionaryId(arch)
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("SERVER OS Architecture"),"NULL",arch_id,hostname)
+            
+            status_id = rtobject.GetDictionaryId('Up:Deployed')
+            rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("STATUS"),"NULL",status_id,hostname)
+
+
+
+            for interface in ansible_interfaces:
+                if interface != 'lo':
+                    device = "ansible_"+interface
+                    device_ipv4 = facts.get(device).get('ipv4')
+                    if device_ipv4 != None:
+                        rtobject.InterfaceAddIpv4IP(object_id,interface,device_ipv4.get('address'))
+            
+            if args.contact:
+                args_var=vars(args)
+                contact_person= args_var['contact']
+                rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("Contact Person"),contact_person,"NULL",hostname)
+
+            rtobject.DelLocationTag(object_id)
+            tags_list = rtobject.GetObjectTags(object_id)
+            if hostname.startswith( 'E11' ):
+                tag_id=rtobject.GetLocationTagid('E11')
+                rtobject.AddLocationTag(object_id, tag_id)
+            elif hostname.startswith( 'E3' ):
+                tag_id=rtobject.GetLocationTagid('E3')
+                rtobject.AddLocationTag(object_id, tag_id)
+            elif hostname.startswith( 'E4' ):
+                tag_id=rtobject.GetLocationTagid('E4')
+                rtobject.AddLocationTag(object_id, tag_id)
+            elif hostname.startswith( 'E7' ):
+                tag_id=rtobject.GetLocationTagid('WH7')
+                rtobject.AddLocationTag(object_id, tag_id)
+            elif hostname.startswith( 'S7' ):
+                tag_id=rtobject.GetLocationTagid('WH7')
+                rtobject.AddLocationTag(object_id, tag_id)
+            elif hostname.startswith( 'S1' ):
+                tag_id=rtobject.GetLocationTagid('WH1')
+                rtobject.AddLocationTag(object_id, tag_id)
+            elif hostname.startswith( 'S8' ):
+                tag_id=rtobject.GetLocationTagid('WH8')
+                rtobject.AddLocationTag(object_id, tag_id)
+            rtobject.InsertLog(object_id, "Server-Audit insert instalation date")
+        else:
+            print("Hostname already in DB, service tag is matching. Updating information in DB")
+            #object_id = rtobject.GetObjectId(hostname)
+            #if HDisk != "":
+            #    rtobject.InsertAttribute(object_id,server_type_id,rtobject.GetAttributeId("HDISK"),HDisk,"NULL",hostname)
+
+
+
+
+# here        
+        if rtobject.ObjectExistSTName(hostname, service_tag):
+            object_id = rtobject.GetObjectId(hostname)
+            object_label = rtobject.GetObjectLabel(object_id)
+        else:
+            print "Can't do it. Hostname %s and service-tag %s already exist, but does not belong to the same server"% (hostname, service_tag)
+            sys.exit(1)
+        
+        
+db.close()
