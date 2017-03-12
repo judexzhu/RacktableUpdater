@@ -28,12 +28,14 @@ if args.verbose:
 try:
     # Create connection to database
     db = MySQLdb.connect(host='racktables',port=3306, passwd='password',db='racktables',user='root')
+    logging.debug("DEBUG: Connecting to Racktables, Host: "+host+", with username: "+user)
 except MySQLdb.Error ,e:
     print "Error %d: %s" % (e.args[0],e.args[1])
     sys.exit(1)
 
 # Initialize rtapi with database connection
 rtobject = rtapi.RTObject(db)
+logging.debug("DEBUG: Initialize Database connection success.")
 
 # List all objects from database
 #print rtobject.ListObjects()
@@ -41,11 +43,14 @@ rtobject = rtapi.RTObject(db)
 
 
 if os.path.exists(args.filename):
+    logging.debug("DEBUG: Initialize file: "+filename+" success.")
     with open(args.filename) as data_file:    
         data = json.load(data_file)
+        logging.debug("DEBUG: "+filename+" content loaded.")
     facts = data.get('ansible_facts')
+    logging.debug("DEBUG: Getting Ansible facts.")
 else:
-    print "Error file no exist"
+    print "Error: File does not exist. Please check the Files."
     sys.exit(1)
 
 ansible_architecture = facts.get('ansible_architecture')
@@ -122,15 +127,19 @@ for key, value  in ansible_devices.items():
 #Main Racktables Input:
 
 if server_type_id == 4:
+    logging.debug("DEBUG: This server is a physical Server)
     product_name = ansible_product_name
-    logging.debug("Product name: "+product_name)
+    logging.debug("DEBUG: Product name: "+product_name)
     service_tag = ansible_product_serial
+    logging.debug("DEBUG: Service Tag: "+service_tag)
     
     vendor = ansible_system_vendor.partition(' ')[0]
 
 elif server_type_id == 1504:
-
+    logging.debug("DEBUG: This server is a Virtual Machine)
     service_tag = "VM."+ansible_hostname
+    logging.debug("DEBUG: For VM there is no Service Tag. Service Tag will show as vm.hostname .")
+    logging.debug("DEBUG: Service Tag : "+service_tag)
 
 # Get hostname
 hostname = ansible_hostname.upper()
@@ -153,9 +162,13 @@ if not rtobject.ObjectExistST(service_tag):
     # service tag not exist
     #
     # hostname not exist = insert new server Object
+    logging.debug("DEBUG: Service Tag: "+service_tag+" not Found in Racktables.")
     if not rtobject.ObjectExistName(hostname):
+        logging.debug("DEBUG: Hostname: "+hostname+" not Found in Racktables.")
         rtobject.AddObject(hostname,server_type_id,service_tag,label)
+        logging.debug("DEBUG: New Object has been created into the Racktables. Hostname: "+hostname+"; Server Type ID: "+server_type_id+"; Server Tag: "+service_tag+"; Label: "+label)
         object_id = rtobject.GetObjectId(hostname)
+        logging.debug("DEBUG: Hostname: "+hostname+" Object_id :"+object_id)
         #print(object_id)
         searchstring = os
         os_id = rtobject.GetDictionaryId(os)
